@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <map>
 
-// ---- GEDCOM Structures and Logic ----
 struct GedcomNode {
     int level;
     std::string xref_id;
@@ -164,56 +163,59 @@ std::unordered_map<std::string, Family> extractFamilies(const std::unordered_map
     return families;
 }
 
-void exportToJson(const std::unordered_map<std::string, Individual>& individuals,
-                  const std::unordered_map<std::string, Family>& families) {
-    std::ofstream out("ctree_output.json");
-    out << "{\n  \"individuals\": [\n";
-    bool first = true;
+void displayIndividuals(const std::unordered_map<std::string, Individual>& individuals,
+                        const std::map<std::string, std::string>& simplifiedIds) {
     for (const auto& [id, indi] : individuals) {
-        if (!first) out << ",\n";
-        first = false;
-        out << "    {\n      \"id\": \"" << id << "\",\n      \"name\": \"" << indi.name << "\",\n      \"sex\": \"" << indi.sex << "\",\n      \"events\": [";
-        for (size_t i = 0; i < indi.events.size(); ++i) {
-            const auto& e = indi.events[i];
-            if (i > 0) out << ", ";
-            out << "{ \"type\": \"" << e.type << "\", \"date\": \"" << e.date << "\", \"place\": \"" << e.place << "\" }";
-        }
-        out << "]\n    }";
-    }
-    out << "\n  ],\n  \"families\": [\n";
-    first = true;
-    for (const auto& [id, fam] : families) {
-        if (!first) out << ",\n";
-        first = false;
-        out << "    {\n      \"id\": \"" << id << "\",\n      \"husband\": \"" << fam.husband_id << "\",\n      \"wife\": \"" << fam.wife_id << "\",\n      \"children\": [";
-        for (size_t i = 0; i < fam.children_ids.size(); ++i) {
-            if (i > 0) out << ", ";
-            out << "\"" << fam.children_ids[i] << "\"";
-        }
-        out << "]\n    }";
-    }
-    out << "\n  ]\n}\n";
-    out.close();
-    std::cout << "\nExported to ctree_output.json\n";
-}
-
-void displayIndividuals(const std::unordered_map<std::string, Individual>& individuals) {
-    for (const auto& [id, indi] : individuals) {
-        std::cout << "ID: " << id << " | Name: " << indi.name << " | Sex: " << indi.sex << "\n";
+        std::cout << "ID: " << simplifiedIds.at(id) << " | Name: " << indi.name << " | Sex: " << indi.sex << "\n";
         for (const auto& e : indi.events) {
             std::cout << "  Event: " << e.type << " | Date: " << e.date << " | Place: " << e.place << "\n";
         }
+        for (const auto& sid : indi.sources) {
+            if (sourcesMap.count(sid))
+                std::cout << "  Source: " << sourcesMap[sid] << "\n";
+            else
+                std::cout << "  Source: " << sid << " (unresolved)\n";
+        }
+        for (const auto& nid : indi.notes) {
+            if (notesMap.count(nid))
+                std::cout << "  Note: " << notesMap[nid] << "\n";
+            else
+                std::cout << "  Note: " << nid << " (unresolved)\n";
+        }
         std::cout << "\n";
     }
 }
 
-void displayFamilies(const std::unordered_map<std::string, Family>& families) {
+void displayFamilies(const std::unordered_map<std::string, Family>& families,
+                     const std::map<std::string, std::string>& simplifiedIds) {
     for (const auto& [id, fam] : families) {
-        std::cout << "ID: " << id << " | Husband: " << fam.husband_id << " | Wife: " << fam.wife_id << "\n";
+        std::cout << "Family ID: " << id << "\n";
+        std::cout << "  Husband: " << (simplifiedIds.count(fam.husband_id) ? simplifiedIds.at(fam.husband_id) : fam.husband_id) << "\n";
+        std::cout << "  Wife: " << (simplifiedIds.count(fam.wife_id) ? simplifiedIds.at(fam.wife_id) : fam.wife_id) << "\n";
         for (const auto& child : fam.children_ids) {
-            std::cout << "  Child: " << child << "\n";
+            std::cout << "  Child: " << (simplifiedIds.count(child) ? simplifiedIds.at(child) : child) << "\n";
         }
         std::cout << "\n";
+    }
+}
+
+void showAncestors(const std::string& id,
+                   const std::unordered_map<std::string, Individual>& individuals,
+                   const std::unordered_map<std::string, Family>& families,
+                   const std::map<std::string, std::string>& simplifiedIds,
+                   int depth = 0) {
+    auto it = individuals.find(id);
+    if (it == individuals.end()) return;
+    const Individual& indi = it->second;
+
+    for (int i = 0; i < depth; ++i) std::cout << "  ";
+    std::cout << "+- " << indi.name << " (" << simplifiedIds.at(id) << ")\n";
+
+    auto famIt = families.find(indi.famc);
+    if (famIt != families.end()) {
+        const Family& fam = famIt->second;
+        if (!fam.husband_id.empty()) showAncestors(fam.husband_id, individuals, families, simplifiedIds, depth + 1);
+        if (!fam.wife_id.empty()) showAncestors(fam.wife_id, individuals, families, simplifiedIds, depth + 1);
     }
 }
 
@@ -225,12 +227,21 @@ int main() {
     auto individuals = extractIndividuals(xrefMap);
     auto families = extractFamilies(xrefMap);
 
+    std::map<std::string, std::string> simplifiedIds;
+    std::map<std::string, std::string> simplifiedToOriginal;
+    int counter = 1;
+    for (const auto& [id, _] : individuals) {
+        std::string simpleId = "IND" + std::to_string(counter++);
+        simplifiedIds[id] = simpleId;
+        simplifiedToOriginal[simpleId] = id;
+    }
+
     while (true) {
         std::cout << "\n===== GEDCOM Console Menu =====" << std::endl;
         std::cout << "1. View Individuals" << std::endl;
         std::cout << "2. View Families" << std::endl;
-        std::cout << "3. Export to JSON" << std::endl;
-        std::cout << "4. Exit" << std::endl;
+        std::cout << "3. Exit" << std::endl;
+        std::cout << "4. Show Ancestors of an Individual" << std::endl;
         std::cout << "Choose an option: ";
 
         int choice;
@@ -238,13 +249,22 @@ int main() {
         std::cin.ignore();
 
         if (choice == 1) {
-            displayIndividuals(individuals);
+            displayIndividuals(individuals, simplifiedIds);
         } else if (choice == 2) {
-            displayFamilies(families);
+            displayFamilies(families, simplifiedIds);
         } else if (choice == 3) {
-            exportToJson(individuals, families);
-        } else if (choice == 4) {
             break;
+        } else if (choice == 4) {
+            std::string inputId;
+            std::cout << "Enter individual ID (e.g. IND1): ";
+            std::getline(std::cin, inputId);
+
+            if (simplifiedToOriginal.count(inputId)) {
+                std::string originalId = simplifiedToOriginal[inputId];
+                showAncestors(originalId, individuals, families, simplifiedIds);
+            } else {
+                std::cout << "Invalid ID. Please use a valid simplified ID like IND1.\n";
+            }
         } else {
             std::cout << "Invalid choice. Try again.\n";
         }
